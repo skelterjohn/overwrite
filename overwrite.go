@@ -44,9 +44,35 @@ func Overwrite(obj interface{}, keystr, value string) error {
 	return k.apply(reflect.ValueOf(obj), value)
 }
 
+/*
+Fetch a value in a nested object, using te key to find it.
+
+The obj parameter must be a struct, a map with string keys, a slice or
+array, or primitive data type (int, string, etc). All nested objects must also
+be one of these types or pointers to one of these types.
+
+The keystr is of the form "FIELD", "[INDEX]", or either of those followed by a
+subkey, which is a key preceded by a ".". So, "x", "x.y[2].z", or "[2]" are
+examples.
+*/
+func Fetch(obj interface{}, keystr string) (interface{}, error) {
+	k, err := parseKey(keystr)
+	if err != nil {
+		return nil, err
+	}
+
+	val, err := k.get(reflect.ValueOf(obj))
+	if err != nil {
+		return nil, err
+	}
+
+	return val.Interface(), nil
+}
+
 type key interface {
 	String() string
 	apply(obj reflect.Value, value string) error
+	get(obj reflect.Value) (reflect.Value, error)
 }
 
 type terminalKey struct {
@@ -97,6 +123,10 @@ func (k terminalKey) apply(obj reflect.Value, value string) error {
 	return nil
 }
 
+func (k terminalKey) get(obj reflect.Value) (reflect.Value, error) {
+	return obj, nil
+}
+
 type fieldKey struct {
 	field  string
 	subkey key
@@ -128,6 +158,26 @@ func (k fieldKey) apply(obj reflect.Value, value string) error {
 		return k.applyToStruct(obj, value)
 	default:
 		return fmt.Errorf("%s: expected map or struct, got %T", k, obj.Interface())
+	}
+}
+
+func (k fieldKey) get(obj reflect.Value) (reflect.Value, error) {
+	switch obj.Type().Kind() {
+	case reflect.Interface:
+		// apply to the contents of the interface.
+		return k.get(obj.Elem())
+	case reflect.Ptr:
+		// pointers need to be dereferenced and, if necessary, allocated
+		if obj.IsNil() {
+			return reflect.Value{}, fmt.Errorf("%s: nil value", k)
+		}
+		return k.get(obj.Elem())
+	case reflect.Map:
+		return k.getFromMap(obj)
+	case reflect.Struct:
+		return k.getFromStruct(obj)
+	default:
+		return reflect.Value{}, fmt.Errorf("%s: expected map or struct, got %T", k, obj.Interface())
 	}
 }
 
@@ -217,6 +267,28 @@ func (k fieldKey) applyToMap(obj reflect.Value, value string) error {
 	return nil
 }
 
+func (k fieldKey) getFromMap(obj reflect.Value) (reflect.Value, error) {
+	// if the map is not allocated, error
+	if obj.IsNil() {
+		return reflect.Value{}, fmt.Errorf("%s: unallocated map", k)
+	}
+
+	if obj.Type().Key().Kind() != reflect.String {
+		return reflect.Value{}, fmt.Errorf("%s: expected map with string keys, got map with %s keys", k, obj.Type().Key().Name())
+	}
+
+	// iterate through keys because we want to not be case sensitive
+	for _, mapKey := range obj.MapKeys() {
+		strkey := mapKey.Interface().(string)
+		if strings.ToLower(strkey) != strings.ToLower(k.field) {
+			continue
+		}
+		subObj := obj.MapIndex(mapKey)
+		return k.subkey.get(subObj)
+	}
+	return reflect.Value{}, fmt.Errorf("%s: map does not have the key", k)
+}
+
 func (k fieldKey) applyToStruct(obj reflect.Value, value string) error {
 	// iterate through fields so that we can ignore case
 	for i := 0; i < obj.NumField(); i++ {
@@ -267,6 +339,19 @@ func (k fieldKey) applyToStruct(obj reflect.Value, value string) error {
 	return fmt.Errorf("%s: no field %s for type %s", k, k.field, obj.Type().Name())
 }
 
+func (k fieldKey) getFromStruct(obj reflect.Value) (reflect.Value, error) {
+	// iterate through fields so that we can ignore case
+	for i := 0; i < obj.NumField(); i++ {
+		tf := obj.Type().Field(i)
+		if strings.ToLower(tf.Name) != strings.ToLower(k.field) {
+			continue
+		}
+		subObj := obj.Field(i)
+		return k.subkey.get(subObj)
+	}
+	return reflect.Value{}, fmt.Errorf("%s: no field %s for type %s", k, k.field, obj.Type().Name())
+}
+
 type indexKey struct {
 	index  int
 	subkey key
@@ -310,6 +395,41 @@ func (k indexKey) apply(obj reflect.Value, value string) error {
 		}
 	}
 	return k.subkey.apply(subObj, value)
+}
+
+func (k indexKey) get(obj reflect.Value) (reflect.Value, error) {
+	switch obj.Type().Kind() {
+	case reflect.Interface:
+		// apply to the contents of the interface.
+		return k.get(obj.Elem())
+	case reflect.Ptr:
+		// pointers need to be dereferenced and, if necessary, allocated
+		if obj.IsNil() {
+			return reflect.Value{}, fmt.Errorf("%s: nil value", k)
+		}
+		return k.get(obj.Elem())
+	}
+
+	if obj.Type().Kind() != reflect.Slice && obj.Type().Kind() != reflect.Array {
+		return reflect.Value{}, fmt.Errorf("%s: expected slice or array, got %s", k, obj.Type().Name())
+	}
+
+	if obj.Len() <= k.index && obj.Type().Kind() == reflect.Array {
+		return reflect.Value{}, fmt.Errorf("%s: array index too large: %d >= %d, got ", k, k.index, obj.Len())
+	}
+
+	// check if we need to grow the slice
+	if obj.Len() <= k.index {
+		return reflect.Value{}, fmt.Errorf("%s: index out of bounds", k)
+	}
+
+	subObj := obj.Index(k.index)
+	if (subObj.Kind() == reflect.Map ||
+		subObj.Kind() == reflect.Slice ||
+		subObj.Kind() == reflect.Interface) && subObj.IsNil() {
+		return reflect.Value{}, fmt.Errorf("%s: nil value", k)
+	}
+	return k.subkey.get(subObj)
 }
 
 const subkeyPattern = `((?:\.|\[).+)?$`
