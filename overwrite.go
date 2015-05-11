@@ -14,6 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/*
+The overwrite package uses string keys to get and set values in structured
+objects.
+
+A key string is of the form "FIELD", "[INDEX]", or either of those followed
+by a subkey, which is a field key preceded by a "." or an index key by
+itself. So, "x", "x.y[2].z", or "[2]" are examples.
+
+A field key will follow struct fields or map keys that are strings. Index
+keys will follow slice or array indices.
+*/
 package overwrite
 
 import (
