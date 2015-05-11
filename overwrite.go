@@ -205,13 +205,12 @@ func (k fieldKey) applyToMap(obj reflect.Value, value string) error {
 		obj.Set(reflect.MakeMap(obj.Type()))
 	}
 
-	if obj.Type().Key().Kind() != reflect.String {
-		return fmt.Errorf("%s: expected map with string keys, got map with %s keys", k, obj.Type().Key().Name())
-	}
-
 	// iterate through keys because we want to not be case sensitive
 	for _, mapKey := range obj.MapKeys() {
-		strkey := mapKey.Interface().(string)
+		strkey, ok := mapKey.Interface().(string)
+		if !ok {
+			return fmt.Errorf("%s: expected map with string keys, got map with %v keys", k, obj.Type().Key())
+		}
 		if strings.ToLower(strkey) != strings.ToLower(k.field) {
 			continue
 		}
@@ -273,13 +272,12 @@ func (k fieldKey) getFromMap(obj reflect.Value) (reflect.Value, error) {
 		return reflect.Value{}, fmt.Errorf("%s: unallocated map", k)
 	}
 
-	if obj.Type().Key().Kind() != reflect.String {
-		return reflect.Value{}, fmt.Errorf("%s: expected map with string keys, got map with %s keys", k, obj.Type().Key().Name())
-	}
-
 	// iterate through keys because we want to not be case sensitive
 	for _, mapKey := range obj.MapKeys() {
-		strkey := mapKey.Interface().(string)
+		strkey, ok := mapKey.Interface().(string)
+		if !ok {
+			return reflect.Value{}, fmt.Errorf("%s: expected map with string keys, got map with %v keys", k, obj.Type().Key())
+		}
 		if strings.ToLower(strkey) != strings.ToLower(k.field) {
 			continue
 		}
